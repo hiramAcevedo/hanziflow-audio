@@ -1,0 +1,30 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Audio output (regenerable, too heavy for git)
+output/
+
+# Raw per-entry TTS files (intermediate, regenerable)
+cache/
+
+# FUSE filesystem orphans
+.fuse_hidden*
+
+# Benchmark runs — hardware/model-specific, no reproducibles fuera de mi M4
+benchmarks/results_*.md
+benchmarks/results_*.json
+
+# Corpus propietario — IP comercial, no publicar mientras HanziFlow esté pre-launch
+sentences/*.md
+sentences/*.json
+translations/*.json
+!sentences/.gitkeep
+!translations/.gitkeep
+
+# Environment
+.DS_Store
+.env
+.env.local
