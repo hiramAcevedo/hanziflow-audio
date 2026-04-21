@@ -46,11 +46,25 @@ def entry_id(simplified: str) -> str:
     return hashlib.md5(simplified.encode("utf-8")).hexdigest()[:10]
 
 
+# Umbral mínimo para considerar un mp3 como cache-hit válido. edge-tts a veces
+# crea el archivo antes de stream-earlo; si el WebSocket muere a mitad (503,
+# network blip), queda un archivo de 0 bytes que en la próxima corrida se
+# detectaba como "ya existe" y jamás se regeneraba. Un mp3 CN/ES típico pesa
+# >5KB incluso para una sola palabra; 200 bytes es un umbral seguro.
+MIN_VALID_MP3_BYTES = 200
+
+
 async def synth(text: str, voice: str, rate: str, out_path: Path) -> None:
-    """Sintetiza un segmento con edge-tts y lo escribe a disco."""
+    """Sintetiza un segmento con edge-tts y lo escribe a disco.
+
+    Cache-hit sólo si el archivo existe Y tiene tamaño plausible. Archivos
+    truncados (típicamente por 503 transitorio de Bing) se sobrescriben.
+    """
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists() and out_path.stat().st_size >= MIN_VALID_MP3_BYTES:
+        return  # cache hit válido
     if out_path.exists():
-        return  # cache hit
+        out_path.unlink()  # archivo corrupto previo — limpiar antes de resynth
     communicate = edge_tts.Communicate(text=text, voice=voice, rate=rate)
     await communicate.save(str(out_path))
 
@@ -76,6 +90,8 @@ async def generate_for_scope(
     voice_keys: List[str],
     include_es: bool,
     include_sentence: bool,
+    include_sentence_es: bool,
+    include_cn: bool = True,
 ) -> None:
     entries = build_scope(scope, hsk_version, level)
     print(f"\n[{scope}] {len(entries)} entradas — voces CN: {', '.join(voice_keys)}")
@@ -88,25 +104,32 @@ async def generate_for_scope(
         eid = entry_id(e["simplified"])
 
         # Chino — una versión por voz CN elegida
-        for vk in voice_keys:
-            voice = CN_VOICES[vk]
-            out = CACHE_DIR / scope / vk / f"{eid}_cn.mp3"
-            await queue.put((e["simplified"], voice, CN_RATE, out))
-            total += 1
+        if include_cn:
+            for vk in voice_keys:
+                voice = CN_VOICES[vk]
+                out = CACHE_DIR / scope / vk / f"{eid}_cn.mp3"
+                await queue.put((e["simplified"], voice, CN_RATE, out))
+                total += 1
 
-        # Español (una sola versión, compartida entre todas las voces CN)
+        # Español palabra (una sola versión, compartida entre todas las voces CN)
         if include_es and e.get("translation_es"):
             out = CACHE_DIR / scope / "_es" / f"{eid}_es.mp3"
             await queue.put((e["translation_es"], ES_VOICE, ES_RATE, out))
             total += 1
 
-        # Oración (una por voz CN)
+        # Oración CN (una por voz CN)
         if include_sentence and e.get("example_sentence"):
             for vk in voice_keys:
                 voice = CN_VOICES[vk]
                 out = CACHE_DIR / scope / vk / f"{eid}_sent.mp3"
                 await queue.put((e["example_sentence"], voice, CN_RATE, out))
                 total += 1
+
+        # Oración ES (una sola, compartida entre voces CN) — necesaria para v3sub1 y v3sub2
+        if include_sentence_es and e.get("example_sentence_es"):
+            out = CACHE_DIR / scope / "_es" / f"{eid}_sent_es.mp3"
+            await queue.put((e["example_sentence_es"], ES_VOICE, ES_RATE, out))
+            total += 1
 
     print(f"  ↳ {total} archivos TTS en cola (cache se respeta)")
     # Sentinel por worker
@@ -132,8 +155,14 @@ def main() -> None:
     parser.add_argument(
         "--mode",
         default="v1",
-        choices=["v1", "v2", "v3", "all"],
-        help="v1=CN+ES, v2=solo CN, v3=CN+ES+oración, all=todo",
+        choices=["v1", "v2", "v3", "v3sub1", "v3sub2", "v3sub3", "v3sub4", "sent_es", "all"],
+        help=(
+            "v1=CN+ES_word, v2=solo CN, "
+            "v3=CN+ES_word+CN_sent (legacy), "
+            "v3sub1=+ES_sent, v3sub2=+CN_sent+ES_sent, "
+            "v3sub3=v3 legacy, v3sub4=CN+CN_sent, "
+            "sent_es=solo oraciones_ES, all=todo"
+        ),
     )
     args = parser.parse_args()
 
@@ -153,14 +182,27 @@ def main() -> None:
             raise SystemExit(f"voz desconocida: {args.voice}")
         voice_keys = [args.voice]
 
-    # Qué generar
-    include_es = args.mode in ("v1", "v3", "all")
-    include_sentence = args.mode in ("v3", "all")
+    # Qué generar por modo
+    # sent_es: modo aislado para generar solo oraciones ES (ningún clip CN/ES_word)
+    if args.mode == "sent_es":
+        include_cn = False
+        include_es = False
+        include_sentence = False
+        include_sentence_es = True
+    else:
+        include_cn = True
+        include_es = args.mode in ("v1", "v3", "v3sub1", "v3sub3", "all")
+        include_sentence = args.mode in (
+            "v3", "v3sub1", "v3sub2", "v3sub3", "v3sub4", "all",
+        )
+        include_sentence_es = args.mode in ("v3sub1", "v3sub2", "all")
 
     async def runall():
         for scope_name, ver, lvl in scopes:
             await generate_for_scope(
-                scope_name, ver, lvl, voice_keys, include_es, include_sentence
+                scope_name, ver, lvl, voice_keys,
+                include_es, include_sentence, include_sentence_es,
+                include_cn=include_cn,
             )
 
     asyncio.run(runall())

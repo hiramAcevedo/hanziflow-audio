@@ -1,18 +1,25 @@
 """Compila MP3s individuales (cache/) en audios finales por scope × voz × modo.
 
-Produce archivos como:
-    output/edge/v1/hsk2.0_l1_yunjian_v1.mp3
-    output/edge/v2/hsk2.0_l1_yunjian_v2.mp3
-    output/edge/v3/hsk2.0_l1_yunjian_v3.mp3
+Produce archivos agrupados por scope (una carpeta por lista HSK):
+    output/edge/hsk2.0_l1/v1/hsk2.0_l1_corta_v1.mp3
+    output/edge/hsk2.0_l1/v2/hsk2.0_l1_corta_v2.mp3
+    output/edge/hsk2.0_l1/v3/hsk2.0_l1_corta_v3sub1.mp3
+    output/edge/hsk2.0_l1/v3/hsk2.0_l1_corta_v3sub2.mp3
+    output/edge/hsk2.0_l1/v3/hsk2.0_l1_corta_v3sub3.mp3
+    output/edge/hsk2.0_l1/v3/hsk2.0_l1_corta_v3sub4.mp3
 
 Formato de cada modo:
-    v1: [CN] [pausa] [ES] [pausa entre entradas]
-    v2: [CN] [pausa larga] [CN repetido] [pausa entre entradas]
-    v3: [CN] [pausa] [ES] [pausa] [oración CN] [pausa entre entradas]
+    v1     : [CN_word] [pausa] [ES_word] [pausa entre entradas]
+    v2     : [CN_word] [pausa larga] [CN_word repetido] [pausa entre entradas]
+    v3sub1 : [CN_word] [pausa] [ES_word] [pausa] [CN_sent] [pausa] [ES_sent] [pausa entre entradas]
+    v3sub2 : [CN_word] [pausa] [CN_sent] [pausa] [ES_sent] [pausa entre entradas]
+    v3sub3 : [CN_word] [pausa] [ES_word] [pausa] [CN_sent] [pausa entre entradas]    (legacy v3)
+    v3sub4 : [CN_word] [pausa] [CN_sent] [pausa entre entradas]                      (inmersivo total)
 
 Uso:
-    python compile.py --scope hsk2.0_l1 --voice yunjian --mode v1
+    python compile.py --scope hsk2.0_l1 --voice corta --mode v1
     python compile.py --scope all --voice all --mode all
+    python compile.py --scope hsk3.0_l1 --voice all --mode v3sub4  # sin ES, usa caché actual
 """
 
 import argparse
@@ -88,25 +95,97 @@ def compile_v2(scope: str, voice_key: str, entries: List[dict]) -> AudioSegment:
     return track
 
 
-def compile_v3(scope: str, voice_key: str, entries: List[dict]) -> AudioSegment:
+def _load_v3_clips(scope: str, voice_key: str, e: dict) -> dict:
+    """Devuelve los 4 posibles clips de una entrada V3."""
+    eid = entry_id(e["simplified"])
+    return {
+        "cn_word": load_clip(CACHE_DIR / scope / voice_key / f"{eid}_cn.mp3"),
+        "cn_sent": load_clip(CACHE_DIR / scope / voice_key / f"{eid}_sent.mp3"),
+        "es_word": load_clip(CACHE_DIR / scope / "_es" / f"{eid}_es.mp3"),
+        "es_sent": load_clip(CACHE_DIR / scope / "_es" / f"{eid}_sent_es.mp3"),
+    }
+
+
+def compile_v3sub1(scope: str, voice_key: str, entries: List[dict]) -> AudioSegment:
+    """sub1: CN_word + ES_word + CN_sent + ES_sent (completo bilingüe)."""
+    track = AudioSegment.silent(duration=500)
+    missing = {"es_word": 0, "cn_sent": 0, "es_sent": 0}
+    for e in entries:
+        c = _load_v3_clips(scope, voice_key, e)
+        if c["cn_word"] is None:
+            continue
+        track += c["cn_word"] + silence(V3_PAUSE_AFTER_CN)
+        track += (c["es_word"] + silence(V3_PAUSE_AFTER_ES)) if c["es_word"] else silence(V3_PAUSE_AFTER_ES)
+        if not c["es_word"]:
+            missing["es_word"] += 1
+        track += (c["cn_sent"] + silence(V3_PAUSE_AFTER_CN)) if c["cn_sent"] else silence(V3_PAUSE_AFTER_CN)
+        if not c["cn_sent"]:
+            missing["cn_sent"] += 1
+        track += (c["es_sent"] + silence(V3_PAUSE_AFTER_SENTENCE)) if c["es_sent"] else silence(V3_PAUSE_AFTER_SENTENCE)
+        if not c["es_sent"]:
+            missing["es_sent"] += 1
+    for k, v in missing.items():
+        if v:
+            print(f"  ⚠ v3sub1: {v} entradas sin {k} (pausa vacía)")
+    return track
+
+
+def compile_v3sub2(scope: str, voice_key: str, entries: List[dict]) -> AudioSegment:
+    """sub2: CN_word + CN_sent + ES_sent (sin palabra ES, contexto bilingüe)."""
+    track = AudioSegment.silent(duration=500)
+    missing = {"cn_sent": 0, "es_sent": 0}
+    for e in entries:
+        c = _load_v3_clips(scope, voice_key, e)
+        if c["cn_word"] is None:
+            continue
+        track += c["cn_word"] + silence(V3_PAUSE_AFTER_CN)
+        track += (c["cn_sent"] + silence(V3_PAUSE_AFTER_CN)) if c["cn_sent"] else silence(V3_PAUSE_AFTER_CN)
+        if not c["cn_sent"]:
+            missing["cn_sent"] += 1
+        track += (c["es_sent"] + silence(V3_PAUSE_AFTER_SENTENCE)) if c["es_sent"] else silence(V3_PAUSE_AFTER_SENTENCE)
+        if not c["es_sent"]:
+            missing["es_sent"] += 1
+    for k, v in missing.items():
+        if v:
+            print(f"  ⚠ v3sub2: {v} entradas sin {k} (pausa vacía)")
+    return track
+
+
+def compile_v3sub3(scope: str, voice_key: str, entries: List[dict]) -> AudioSegment:
+    """sub3: CN_word + ES_word + CN_sent (legacy v3, ES puntual sobre oración)."""
     track = AudioSegment.silent(duration=500)
     used = 0
     for e in entries:
-        eid = entry_id(e["simplified"])
-        cn = load_clip(CACHE_DIR / scope / voice_key / f"{eid}_cn.mp3")
-        es = load_clip(CACHE_DIR / scope / "_es" / f"{eid}_es.mp3")
-        sent = load_clip(CACHE_DIR / scope / voice_key / f"{eid}_sent.mp3")
-        if cn is None:
+        c = _load_v3_clips(scope, voice_key, e)
+        if c["cn_word"] is None:
             continue
-        track += cn + silence(V3_PAUSE_AFTER_CN)
-        if es is not None:
-            track += es + silence(V3_PAUSE_AFTER_ES)
-        if sent is not None:
-            track += sent + silence(V3_PAUSE_AFTER_SENTENCE)
+        track += c["cn_word"] + silence(V3_PAUSE_AFTER_CN)
+        if c["es_word"] is not None:
+            track += c["es_word"] + silence(V3_PAUSE_AFTER_ES)
+        if c["cn_sent"] is not None:
+            track += c["cn_sent"] + silence(V3_PAUSE_AFTER_SENTENCE)
             used += 1
         else:
             track += silence(V3_PAUSE_AFTER_SENTENCE)
-    print(f"  ↳ v3: {used}/{len(entries)} entradas con oración")
+    print(f"  ↳ v3sub3: {used}/{len(entries)} entradas con oración")
+    return track
+
+
+def compile_v3sub4(scope: str, voice_key: str, entries: List[dict]) -> AudioSegment:
+    """sub4: CN_word + CN_sent (inmersivo total, sin muletas ES)."""
+    track = AudioSegment.silent(duration=500)
+    used = 0
+    for e in entries:
+        c = _load_v3_clips(scope, voice_key, e)
+        if c["cn_word"] is None:
+            continue
+        track += c["cn_word"] + silence(V3_PAUSE_AFTER_CN)
+        if c["cn_sent"] is not None:
+            track += c["cn_sent"] + silence(V3_PAUSE_AFTER_SENTENCE)
+            used += 1
+        else:
+            track += silence(V3_PAUSE_AFTER_SENTENCE)
+    print(f"  ↳ v3sub4: {used}/{len(entries)} entradas con oración")
     return track
 
 
@@ -123,12 +202,20 @@ def compile_scope(
                 track = compile_v1(scope, voice_key, entries)
             elif mode == "v2":
                 track = compile_v2(scope, voice_key, entries)
-            elif mode == "v3":
-                track = compile_v3(scope, voice_key, entries)
+            elif mode == "v3sub1":
+                track = compile_v3sub1(scope, voice_key, entries)
+            elif mode == "v3sub2":
+                track = compile_v3sub2(scope, voice_key, entries)
+            elif mode == "v3sub3":
+                track = compile_v3sub3(scope, voice_key, entries)
+            elif mode == "v3sub4":
+                track = compile_v3sub4(scope, voice_key, entries)
             else:
                 continue
 
-            out_dir = OUTPUT_DIR / "edge" / mode
+            # Output dir: v3sub* todos van a v3/ (mismo scope folder)
+            out_parent = "v3" if mode.startswith("v3sub") else mode
+            out_dir = OUTPUT_DIR / "edge" / scope / out_parent
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"{scope}_{voice_key}_{mode}.mp3"
             track.export(
@@ -154,7 +241,9 @@ def main() -> None:
     parser.add_argument("--scope", default="all")
     parser.add_argument("--voice", default="all")
     parser.add_argument(
-        "--mode", default="all", help="v1 | v2 | v3 | all"
+        "--mode",
+        default="all",
+        help="v1 | v2 | v3sub1 | v3sub2 | v3sub3 | v3sub4 | v3 (=all v3sub*) | all",
     )
     args = parser.parse_args()
 
@@ -171,7 +260,9 @@ def main() -> None:
         voice_keys = [args.voice]
 
     if args.mode == "all":
-        modes = ["v1", "v2", "v3"]
+        modes = ["v1", "v2", "v3sub1", "v3sub2", "v3sub3", "v3sub4"]
+    elif args.mode == "v3":
+        modes = ["v3sub1", "v3sub2", "v3sub3", "v3sub4"]
     else:
         modes = [args.mode]
 

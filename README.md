@@ -21,31 +21,47 @@ hanziflow-audio/
 ├── translations/             # overlay ES por scope — hsk2.0_l1.json etc.
 ├── sentences/                # banco de oraciones ZH+ES por scope — hsk2.0_l1.md
 ├── cache/                    # TTS individuales, .gitignored
-└── output/edge/              # MP3s finales por modo, .gitignored
-    ├── mode1/                # palabra_ZH + palabra_ES
-    ├── mode2/                # solo palabra_ZH
-    └── mode3/                # palabra + oración, con 3 Levels internos
-        ├── L1_principiante/
-        ├── L2_medio/
-        └── L3_alto/
+└── output/edge/              # MP3s finales por scope × voz × modo, .gitignored
+    └── <scope>/              # hsk2.0_l1, hsk2.0_l2, hsk3.0_l1, hsk3.0_l2
+        ├── v1/                # palabra_ZH + palabra_ES
+        ├── v2/                # solo palabra_ZH (inmersivo con repetición)
+        └── v3/                # palabra + oración, 4 sub-niveles
+            │                 # <scope>_<voz>_v3sub{1,2,3,4}.mp3
+            │                 # sub1 = word + wordES + sent + sentES
+            │                 # sub2 = word + sent + sentES
+            │                 # sub3 = word + wordES + sent (legacy v3)
+            │                 # sub4 = word + sent (inmersivo total)
 ```
 
 ## Matriz de Modos
 
-Los 3 Modos son **paralelos**, no versiones sucesivas. Cada lista HSK
-cubierta tendrá los 3. Modo 3 tiene 3 sub-niveles internos para acompañar
-al estudiante conforme avanza.
+Los modos V1, V2 y V3 son **paralelos**, no versiones sucesivas. Cada lista
+HSK cubierta tendrá los tres. V3 se subdivide en 4 sub-niveles internos
+(`v3sub1`–`v3sub4`) que acompañan al estudiante conforme pasa de
+principiante a inmersivo-sin-muletas.
 
-| Modo | Contenido del audio | Texto asociado |
+| Modo | Contenido del audio | Uso típico |
 |---|---|---|
-| **1** | palabra_ZH + palabra_ES | 1 versión con pinyin |
-| **2** | solo palabra_ZH (pausa mental, repetición) | 1 versión con pinyin |
-| **3 — L1 Principiante** | palabra_ZH + palabra_ES + oración_ZH + oración_ES | 1 versión con pinyin |
-| **3 — L2 Medio** | palabra_ZH + oración_ZH + español | 2 versiones: con y sin pinyin |
-| **3 — L3 Alto** | palabra_ZH + oración_ZH | 2 versiones: con y sin pinyin |
+| **v1** | palabra_ZH + palabra_ES | Descubrir vocabulario, bilingüe |
+| **v2** | palabra_ZH + pausa mental + palabra_ZH | Auto-quiz tras v1 |
+| **v3sub1** | palabra_ZH + palabra_ES + oración_ZH + oración_ES | Entrada total al contexto |
+| **v3sub2** | palabra_ZH + oración_ZH + oración_ES | Ya sabes la palabra, falta el contexto |
+| **v3sub3** | palabra_ZH + palabra_ES + oración_ZH | Refuerzo ES puntual sobre oración natural |
+| **v3sub4** | palabra_ZH + oración_ZH | Inmersivo total — sin muletas ES |
 
-Por lista HSK: 5 audios + 7 textos. Para los 4 scopes del examen (HSK 2.0
-L1–L2, HSK 3.0 L1–L2) son **20 audios + 28 textos totales**.
+Por lista HSK × voz: 6 audios (v1, v2, v3sub1, v3sub2, v3sub3, v3sub4). Con 3
+voces CN (corta/larga/neutral) eso da **18 MP3s por scope**. Para los 4 scopes
+del examen (HSK 2.0 L1–L2, HSK 3.0 L1–L2) son **72 MP3s totales**.
+
+### Sufijo `v3sub*` y migración
+
+Antes existía un único `v3.mp3` (híbrido: palabra_ZH + palabra_ES + oración_ZH).
+Ese contenido corresponde ahora a `v3sub3`. Los archivos previos se renombran
+conservando el audio; no se regenera nada. Los nuevos sub-niveles (`v3sub1`,
+`v3sub2`, `v3sub4`) usan los mismos clips cacheados más un clip nuevo por
+entrada: `<eid>_sent_es.mp3` (oración_ES sintetizada con la voz española).
+`v3sub4` no necesita clips ES de ningún tipo — es el único sub-nivel que se
+puede compilar con el caché actual sin trabajo extra.
 
 ## Reglas duras del pipeline
 
@@ -129,9 +145,16 @@ python generate_edge.py --scope hsk2.0_l1 --voice all --mode v1
 
 # Todo el corpus, todas las voces, todos los modos
 python generate_edge.py --scope all --voice all --mode all
+
+# Solo las oraciones_ES (necesarias para v3sub1 y v3sub2) sobre todos los scopes
+python generate_edge.py --scope all --mode sent_es
 ```
 
 El cache se respeta: una segunda corrida solo genera lo nuevo.
+
+**`sent_es`**: modo dedicado a sintetizar las oraciones en español (una voz ES,
+sin voces CN). Se cachea en `cache/<scope>/_es/<eid>_sent_es.mp3`. Corre una
+sola vez por scope; se comparte entre `v3sub1` y `v3sub2`.
 
 ### 3. Compilar MP3s finales
 ```bash
